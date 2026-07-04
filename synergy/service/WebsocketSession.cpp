@@ -2,6 +2,7 @@
 
 #include <synergy/service/ServiceLogs.h>
 #include <boost/asio/connect.hpp>
+#include <boost/beast/core/buffers_to_string.hpp>
 #include <fmt/ostream.h>
 #include <stdlib.h>
 #include <time.h>
@@ -166,15 +167,17 @@ WebsocketSession::onTcpClientConnected()
     setTcpKeepAliveTimeout();
 
     // websocket handshake
-    m_websocket->async_handshake_ex(
-        m_res,
-        m_tcpClient->address().c_str(),
-        m_target.c_str(),
+    m_websocket->set_option(websocket::stream_base::decorator(
         [this](boost::beast::websocket::request_type & req) {
             for (auto const& i : m_headers) {
                 req.set(i.first, i.second);
             }
-        },
+        }));
+
+    m_websocket->async_handshake(
+        m_res,
+        m_tcpClient->address().c_str(),
+        m_target.c_str(),
         std::bind(
             &WebsocketSession::onWebsocketHandshakeFinished,
             this,
@@ -197,7 +200,9 @@ void
 WebsocketSession::onWebsocketHandshakeFinished(WebsocketSession::ErrorCode ec)
 {
     if (ec) {
-        std::string res_failed_reason = m_res["X-SCS-Reason"].to_string();
+        auto const res_failed_reason_view = m_res["X-SCS-Reason"];
+        std::string res_failed_reason(res_failed_reason_view.data(),
+                                      res_failed_reason_view.size());
         if (m_res.result() == boost::beast::http::status::forbidden && !res_failed_reason.empty()) {
             serviceLog()->error("websocket connection failed: {}", res_failed_reason);
             handleConnectError(false, WebsocketError::kAuth);
@@ -238,10 +243,7 @@ WebsocketSession::onReadFinished(WebsocketSession::ErrorCode ec)
         return;
     }
 
-
-    std::ostringstream stream;
-    stream << boost::beast::buffers(m_readBuffer.data());
-    std::string message =  stream.str();
+    std::string message = boost::beast::buffers_to_string(m_readBuffer.data());
     messageReceived(std::move(message));
 
     m_readBuffer = boost::beast::multi_buffer();
@@ -270,11 +272,11 @@ void WebsocketSession::shutdown() noexcept
         serviceLog()->debug("closing existing websocket connection");
         ErrorCode ec;
         m_reconnectTimer.cancel();
-        m_websocket->lowest_layer().cancel(ec);
+        m_websocket->next_layer().lowest_layer().cancel(ec);
         m_ioService.poll();
         serviceLog()->debug("cancelled websocket lowest layer");
         m_websocket->close(websocket::close_code::normal, ec);
-        m_websocket->lowest_layer().close(ec);
+        m_websocket->next_layer().lowest_layer().close(ec);
         m_connecting = false;
         m_connected = false;
     }
@@ -302,7 +304,7 @@ void WebsocketSession::setTcpKeepAliveTimeout()
     options.keepaliveinterval = kTcpKeepAliveIntervalSec * 1000;
 
     BOOL on = true;
-    SOCKET native = socket.native();
+    SOCKET native = socket.native_handle();
     DWORD bytesReturned;
 
     int keepaliveResult = setsockopt(native, SOL_SOCKET, SO_KEEPALIVE, (const char *) &on, sizeof(on));
@@ -320,7 +322,7 @@ void WebsocketSession::setTcpKeepAliveTimeout()
         return;
     }
 #else
-    int nativeSocket= socket.native();
+    int nativeSocket= socket.native_handle();
 
     int on = 1;
     int enableResult = 0;

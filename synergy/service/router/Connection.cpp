@@ -46,7 +46,7 @@ Connection::~Connection () noexcept {
 void
 Connection::start () {
     asio::spawn (
-        socket_.get_io_service (),
+        socket_.get_executor (),
         [ this, self = this->shared_from_this () ](auto ctx) {
             enabled_ = true;
             while (true) {
@@ -91,7 +91,8 @@ Connection::stop () {
 
     enabled_ = false;
     socket_.cancel ();
-    socket_.get_io_service().poll();
+    static_cast<asio::io_service&>(
+        socket_.get_executor().context()).poll();
 }
 
 bool
@@ -104,7 +105,7 @@ Connection::send (MessageHeader const& header, Message const& message) {
     message_queue_.emplace_back (header, message);
 
     if (message_queue_.size() == 1) {
-        asio::spawn (socket_.get_io_service(),
+        asio::spawn (socket_.get_executor(),
                      [this, self = this->shared_from_this ()] (auto ctx) {
             while (!message_queue_.empty()) {
                 auto msg_pair = message_queue_.front();

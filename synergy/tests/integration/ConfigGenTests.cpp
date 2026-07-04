@@ -1,5 +1,6 @@
 #include <synergy/common/ConfigGen.h>
 #include <catch.hpp>
+#include <fstream>
 #include <sstream>
 #include <iostream>
 #include <boost/filesystem.hpp>

@@ -148,8 +148,20 @@ add_definitions (-DBOOST_THREAD_PROVIDES_EXECUTORS)
 #
 # Beast
 #
-set (Beast_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/beast/include")
-include_directories(BEFORE SYSTEM ${Beast_INCLUDE_DIR})
+set (Boost_Beast_HEADER)
+foreach (Boost_INCLUDE_DIR_ENTRY ${Boost_INCLUDE_DIRS})
+    if (EXISTS "${Boost_INCLUDE_DIR_ENTRY}/boost/beast/core.hpp")
+        set (Boost_Beast_HEADER "${Boost_INCLUDE_DIR_ENTRY}/boost/beast/core.hpp")
+        break()
+    endif()
+endforeach()
+
+if (Boost_Beast_HEADER)
+    message (STATUS "Using Boost.Beast from ${Boost_Beast_HEADER}")
+else()
+    set (Beast_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/beast/include")
+    include_directories(BEFORE SYSTEM ${Beast_INCLUDE_DIR})
+endif()
 
 #
 # Autobahn

@@ -16,7 +16,7 @@ IPMonitor::start() {
 
     m_running = true;
 
-    boost::asio::spawn (m_pollTimer.get_io_service(), [this](auto ctx) {
+    boost::asio::spawn (m_pollTimer.get_executor(), [this](auto ctx) {
         while (true) {
             if (!this->m_running) {
                 return;

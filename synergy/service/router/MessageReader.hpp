@@ -15,10 +15,10 @@ template <typename AsyncReadStream>
 class MessageReader final {
 public:
     template <typename Duration = std::chrono::seconds>
-    MessageReader (AsyncReadStream& stream,
+        MessageReader (AsyncReadStream& stream,
                    Duration timeout = std::chrono::seconds (3))
         : stream_ (&stream),
-          timer_ (stream.get_io_service ()),
+          timer_ (stream.get_executor ()),
           read_timeout_ (
               std::chrono::duration_cast<decltype (read_timeout_)> (timeout)) {
     }

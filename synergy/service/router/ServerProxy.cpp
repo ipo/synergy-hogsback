@@ -33,8 +33,8 @@ private:
 class ServerProxyConnection:
     public std::enable_shared_from_this<ServerProxyConnection> {
 public:
-    explicit ServerProxyConnection (asio::io_service& io):
-        socket_ (io) {
+    explicit ServerProxyConnection (tcp::socket::executor_type executor):
+        socket_ (executor) {
     }
 
     tcp::socket& socket () &;
@@ -99,10 +99,10 @@ ServerProxy::start (std::int64_t const server_id) {
     this->stop();
     server_id_ = boost::numeric_cast<std::uint32_t>(server_id);
 
-    asio::spawn (acceptor_.get_io_service (), [this](auto ctx) {
+    asio::spawn (acceptor_.get_executor (), [this](auto ctx) {
         while (true) {
             auto connection = std::make_shared<ServerProxyConnection> (
-                acceptor_.get_io_service ());
+                acceptor_.get_executor ());
 
             boost::system::error_code ec;
             acceptor_.async_accept (connection->socket (), ctx[ec]);
@@ -140,11 +140,13 @@ ServerProxy::start (std::int64_t const server_id) {
 void
 ServerProxy::stop () {
     acceptor_.cancel ();
-    acceptor_.get_io_service().poll();
+    static_cast<asio::io_service&>(
+        acceptor_.get_executor().context()).poll();
     for (auto& connection : connections_) {
         connection->close ();
     }
-    acceptor_.get_io_service().poll();
+    static_cast<asio::io_service&>(
+        acceptor_.get_executor().context()).poll();
     connections_.clear ();
 }
 
@@ -153,10 +155,10 @@ ServerProxyConnection::start (ServerProxy& proxy,
                               std::uint32_t const server_id) {
     /* Read loop */
     asio::spawn (
-        socket_.get_io_service (), [this, &proxy, server_id,
+        socket_.get_executor (), [this, &proxy, server_id,
                                     self = this->shared_from_this()](auto ctx) {
             // HACK: wait for 200 ms, so core will be ready for this hello message
-            asio::steady_timer timer (socket_.get_io_service());
+            asio::steady_timer timer (socket_.get_executor());
             boost::system::error_code ec;
             timer.expires_from_now (std::chrono::milliseconds (200));
             timer.async_wait (ctx[ec]);
@@ -243,7 +245,7 @@ ServerProxyConnection::close () {
 
 void
 ServerProxyConnection::write (std::vector<uint8_t> data) {
-    asio::spawn (socket_.get_io_service (),
+    asio::spawn (socket_.get_executor (),
                  [this, data = std::move(data)](auto ctx) {
         auto size = boost::numeric_cast<uint32_t> (data.size ());
         boost::endian::native_to_big_inplace (size);

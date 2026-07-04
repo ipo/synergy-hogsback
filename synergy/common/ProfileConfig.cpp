@@ -1,7 +1,7 @@
 #include "ProfileConfig.h"
 
 #include <synergy/service/ServiceLogs.h>
-#include <synergy/common/ProfileConfigSnapshot.h>"
+#include <synergy/common/ProfileConfigSnapshot.h>
 
 #include <synergy/service/json.hpp>
 

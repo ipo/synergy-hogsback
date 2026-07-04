@@ -127,7 +127,7 @@ ClientProxy::router () const noexcept {
 void
 ClientProxyConnection::start (ClientProxy& proxy) {
     /* Read loop */
-    asio::spawn (socket_.get_io_service (), [this, self = shared_from_this(), &proxy](auto ctx) {
+    asio::spawn (socket_.get_executor (), [this, self = shared_from_this(), &proxy](auto ctx) {
         std::vector<unsigned char> buffer;
         int32_t size = 0;
         boost::system::error_code ec;
@@ -197,12 +197,13 @@ void
 ClientProxyConnection::stop () {
     boost::system::error_code ec;
     socket_.cancel(ec);
-    socket_.get_io_service().poll();
+    static_cast<asio::io_service&>(
+        socket_.get_executor().context()).poll();
 }
 
 void
 ClientProxyConnection::write (const std::vector<uint8_t>& data) {
-    asio::spawn (socket_.get_io_service (), [this, data](auto ctx) {
+    asio::spawn (socket_.get_executor (), [this, data](auto ctx) {
         uint32_t size = data.size ();
         boost::endian::native_to_big_inplace (size);
 

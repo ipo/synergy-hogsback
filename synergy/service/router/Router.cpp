@@ -45,14 +45,14 @@ Router::add_peer (tcp::endpoint endpoint, bool const immediate) {
     routerLog()->debug("Connecting to new peer at {}", endpoint);
 
     /* Connect thread */
-    asio::spawn (acceptor_.get_io_service (), [this, endpoint, immediate](auto ctx) {
+    asio::spawn (acceptor_.get_executor (), [this, endpoint, immediate](auto ctx) {
         if (!running_) {
             routerLog()->debug("Aborting connection to {} (router shutdown)",
                                endpoint);
             return;
         }
 
-        asio::steady_timer timer (acceptor_.get_io_service ());
+        asio::steady_timer timer (acceptor_.get_executor ());
 
         /* Delay the first connection attempt if requested. This happens e.g.
          * when reconnecting after an unexpected disconnect.
@@ -72,7 +72,7 @@ Router::add_peer (tcp::endpoint endpoint, bool const immediate) {
                 break;
             }
 
-            tcp::socket socket (acceptor_.get_io_service ());
+            tcp::socket socket (acceptor_.get_executor ());
             socket.open (endpoint.protocol ());
             boost::system::error_code ec;
             restrict_tcp_socket_buffer_sizes (socket, ec);
@@ -185,7 +185,8 @@ Router::Router (asio::io_service& io, std::uint16_t const port)
 asio::io_service&
 Router::getIoService()
 {
-    return acceptor_.get_io_service();
+    return static_cast<asio::io_service&>(
+        acceptor_.get_executor().context());
 }
 
 bool
@@ -207,9 +208,9 @@ Router::start (uint32_t const id, std::string name) {
     routerLog()->debug ("ID = {}, Name = '{}'", id_, name_);
 
     /* Accept thread */
-    asio::spawn (acceptor_.get_io_service (), [this](asio::yield_context ctx) {
+    asio::spawn (acceptor_.get_executor (), [this](asio::yield_context ctx) {
         while (running_) {
-            tcp::socket socket (acceptor_.get_io_service ());
+            tcp::socket socket (acceptor_.get_executor ());
             boost::system::error_code ec;
             acceptor_.async_accept (socket, ctx[ec]);
 
@@ -253,7 +254,7 @@ Router::start (uint32_t const id, std::string name) {
     });
 
     /* Hello thread - Heartbeats neighbours so they know we're still here */
-    asio::spawn (acceptor_.get_io_service (), [this](asio::yield_context ctx) {
+    asio::spawn (acceptor_.get_executor (), [this](asio::yield_context ctx) {
         HelloMessage hello;
         hello.id   = id_;
         hello.name = name_;
@@ -289,7 +290,8 @@ Router::shutdown () {
     running_ = false;
     hello_timer_.cancel ();
     acceptor_.cancel ();
-    acceptor_.get_io_service().poll();
+    static_cast<asio::io_service&>(
+        acceptor_.get_executor().context()).poll();
 
     auto connections = this->connections_;
     for (auto& connection : connections) {

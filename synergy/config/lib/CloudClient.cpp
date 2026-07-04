@@ -19,6 +19,7 @@
 #include <QEventLoop>
 #include <QHttpMultiPart>
 #include <QNetworkInterface>
+#include <limits>
 #include <cxxopts.hpp>
 
 using namespace std;

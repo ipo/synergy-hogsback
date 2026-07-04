@@ -160,7 +160,8 @@ RouterErrorScreenMonitor::stopTimer()
         return;
     }
     m_timer.cancel();
-    m_timer.get_io_service().poll();
+    static_cast<boost::asio::io_service&>(
+        m_timer.get_executor().context()).poll();
 }
 
 void

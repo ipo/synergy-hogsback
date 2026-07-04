@@ -7,8 +7,10 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/async_result.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/websocket/teardown.hpp>
 #include <boost/algorithm/string/join.hpp>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
@@ -19,18 +21,23 @@ class ProxyClient {
 public:
     using next_layer_type = NextLayer;
     using lowest_layer_type = typename next_layer_type::lowest_layer_type;
+    using executor_type = typename next_layer_type::executor_type;
 
     template <typename NextLayerInit>
     explicit ProxyClient (NextLayerInit&&, std::string host = "",
                           int port = 80);
 
     bool enabled() const noexcept;
+    next_layer_type& next_layer() noexcept;
     lowest_layer_type& lowest_layer() noexcept;
+    executor_type get_executor() noexcept;
 
     template <typename Handler>
     auto
     async_connect (boost::asio::ip::tcp::resolver::iterator, Handler&&) ->
-        typename boost::asio::async_result<std::decay_t<Handler>>::type;
+        typename boost::asio::async_result<
+            std::decay_t<Handler>,
+            void(boost::system::error_code)>::return_type;
 
 
     template <typename Buffer>
@@ -64,9 +71,21 @@ ProxyClient<NextLayer>::enabled() const noexcept {
 }
 
 template<typename NextLayer> inline
+typename ProxyClient<NextLayer>::next_layer_type&
+ProxyClient<NextLayer>::next_layer() noexcept {
+    return m_nextLayer;
+}
+
+template<typename NextLayer> inline
 typename ProxyClient<NextLayer>::lowest_layer_type&
 ProxyClient<NextLayer>::lowest_layer() noexcept {
     return m_nextLayer.lowest_layer();
+}
+
+template<typename NextLayer> inline
+typename ProxyClient<NextLayer>::executor_type
+ProxyClient<NextLayer>::get_executor() noexcept {
+    return m_nextLayer.get_executor();
 }
 
 template<typename NextLayer>
@@ -95,7 +114,7 @@ template <typename NextLayerInit> inline
 ProxyClient<NextLayer>::ProxyClient (NextLayerInit&& nextLayer,
                                      std::string host, int const port):
     m_nextLayer (std::forward<NextLayerInit>(nextLayer)),
-    m_resolver (m_nextLayer.get_io_service()),
+    m_resolver (m_nextLayer.get_executor()),
     m_host (std::move (host)),
     m_port (port) {
 }
@@ -105,10 +124,13 @@ template <typename Handler> inline
 auto
 ProxyClient<NextLayer>::async_connect
 (boost::asio::ip::tcp::resolver::iterator serverItr, Handler&& handler) ->
-    typename boost::asio::async_result<std::decay_t<Handler>>::type
+    typename boost::asio::async_result<
+        std::decay_t<Handler>,
+        void(boost::system::error_code)>::return_type
 {
-    using boost::asio::asio_handler_invoke;
-    boost::asio::async_result<std::decay_t<Handler>> result (handler);
+    boost::asio::async_completion<Handler, void(boost::system::error_code)>
+        init(handler);
+    auto completionHandler = std::move(init.completion_handler);
 
     if (m_connected) {
         throw std::runtime_error ("connect() called on a proxy client that's "
@@ -116,9 +138,10 @@ ProxyClient<NextLayer>::async_connect
     }
 
     if (serverItr == boost::asio::ip::tcp::resolver::iterator()) {
-        asio_handler_invoke ([this, handler]() {
-            handler (boost::asio::error::host_not_found);
-        }, &handler);
+        boost::asio::post (get_executor(),
+            [handler = std::move(completionHandler)]() mutable {
+                handler (boost::asio::error::host_not_found);
+            });
     } else if (this->enabled()) {
         auto target = fmt::format ("{}:{}", serverItr->host_name(),
                                    serverItr->service_name());
@@ -126,30 +149,29 @@ ProxyClient<NextLayer>::async_connect
         // TODO: Using synchronous read and write operations in this handler
         //       is a bad idea. To maintain the illusion of a regular stream
         //       these should be properly composed async operations with timeouts
-        auto connect_handler = [this, target, handler](auto ec) {
-            asio_handler_invoke ([this, target, handler, ec]() mutable {
-                if (!ec) {
-                    boost::beast::http::request<boost::beast::http::empty_body> req;
-                    req.version (11);
-                    req.method (boost::beast::http::verb::connect);
-                    req.target (target);
+        auto connect_handler = [this, target, completionHandler](auto ec)
+                mutable {
+            if (!ec) {
+                boost::beast::http::request<boost::beast::http::empty_body> req;
+                req.version (11);
+                req.method (boost::beast::http::verb::connect);
+                req.target (target);
 
-                    boost::beast::http::write (m_nextLayer, req, ec);
-                    if (ec) {
-                        handler (ec);
-                        return;
-                    }
-
-                    boost::beast::multi_buffer mb;
-                    boost::beast::http::response_parser<boost::beast::http::empty_body> resp;
-                    resp.skip (true);
-                    boost::beast::http::read (m_nextLayer, mb, resp, ec);
-                    if (!ec) {
-                        m_connected = true;
-                    }
-                    handler (ec);
+                boost::beast::http::write (m_nextLayer, req, ec);
+                if (ec) {
+                    completionHandler (ec);
+                    return;
                 }
-            }, &handler);
+
+                boost::beast::multi_buffer mb;
+                boost::beast::http::response_parser<boost::beast::http::empty_body> resp;
+                resp.skip (true);
+                boost::beast::http::read (m_nextLayer, mb, resp, ec);
+                if (!ec) {
+                    m_connected = true;
+                }
+            }
+            completionHandler (ec);
         };
 
         // Test if the proxy hostname is an IP string or a hostname by
@@ -168,30 +190,25 @@ ProxyClient<NextLayer>::async_connect
             m_resolver.async_resolve (query_type(m_host, std::to_string(m_port),
                                       query_type::flags::numeric_service
                                     | query_type::flags::address_configured),
-            [this, handler, connect_handler](auto ec, auto proxyIt) {
-                asio_handler_invoke ([this, handler, connect_handler, ec,
-                                     proxyIt]() {
-                    std::vector<std::string> addresses;
+            [this, connect_handler](auto ec, auto proxyIt) mutable {
+                std::vector<std::string> addresses;
 
-                    std::transform (proxyIt, decltype(proxyIt)(),
-                                    std::back_inserter(addresses), [](auto& re) {
-                        return re.endpoint().address().to_string();
-                    });
+                std::transform (proxyIt, decltype(proxyIt)(),
+                                std::back_inserter(addresses), [](auto& re) {
+                    return re.endpoint().address().to_string();
+                });
 
-                    serviceLog()->warn("Proxy hostname ('{}') resolved to {}. Connecting...",
-                                       m_host, boost::algorithm::join (addresses, ", "));
+                serviceLog()->warn("Proxy hostname ('{}') resolved to {}. Connecting...",
+                                   m_host, boost::algorithm::join (addresses, ", "));
 
-                    if (ec) {
-                        connect_handler (ec);
-                    } else {
-                        boost::asio::async_connect (m_nextLayer, proxyIt,
-                            [this, handler, connect_handler](auto ec, auto) {
-                            asio_handler_invoke ([this, connect_handler, ec]() {
-                                connect_handler (ec);
-                            }, &handler);
+                if (ec) {
+                    connect_handler (ec);
+                } else {
+                    boost::asio::async_connect (m_nextLayer, proxyIt,
+                        [connect_handler](auto ec, auto) mutable {
+                            connect_handler (ec);
                         });
-                    }
-                }, &handler);
+                }
             });
         } else {
             serviceLog()->warn("Connecting to proxy at {}...", m_host);
@@ -200,15 +217,15 @@ ProxyClient<NextLayer>::async_connect
         }
     } else {
         boost::asio::async_connect (m_nextLayer, serverItr,
-                                    [this, handler](auto ec, auto it) {
-            asio_handler_invoke ([this, handler, ec]() {
+                                    [this, completionHandler](auto ec, auto) mutable {
+            if (!ec) {
                 this->m_connected = true;
-                handler (ec);
-            }, &handler);
+            }
+            completionHandler (ec);
         });
     }
 
-    return result.get();
+    return init.result.get();
 }
 
 template <typename NextLayer>
@@ -242,6 +259,34 @@ std::size_t
 ProxyClient<NextLayer>::write_some (Buffer const& buffer,
                                     boost::system::error_code& ec) {
     return m_nextLayer.write_some (buffer, ec);
+}
+
+template <typename NextLayer> inline
+void
+beast_close_socket(ProxyClient<NextLayer>& stream)
+{
+    boost::beast::beast_close_socket(stream.next_layer());
+}
+
+template <typename NextLayer> inline
+void
+teardown(boost::beast::role_type role,
+         ProxyClient<NextLayer>& stream,
+         boost::beast::error_code& ec)
+{
+    using boost::beast::websocket::teardown;
+    teardown(role, stream.next_layer(), ec);
+}
+
+template <typename NextLayer, typename TeardownHandler> inline
+void
+async_teardown(boost::beast::role_type role,
+               ProxyClient<NextLayer>& stream,
+               TeardownHandler&& handler)
+{
+    using boost::beast::websocket::async_teardown;
+    async_teardown(role, stream.next_layer(),
+                   std::forward<TeardownHandler>(handler));
 }
 
 #endif // PROXYSTREAM_H

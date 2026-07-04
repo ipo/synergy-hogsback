@@ -1,5 +1,6 @@
 #pragma once
 
+#include <boost/asio/io_service.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/signals2.hpp>

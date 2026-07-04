@@ -8,6 +8,7 @@
 #include <catch.hpp>
 #include <fakeit.hpp>
 #include <boost/asio/io_service.hpp>
+#include <boost/date_time/posix_time/posix_time_duration.hpp>
 #include <boost/signals2.hpp>
 #include <memory>
 #include <cstdlib>
@@ -21,6 +22,13 @@ const float kMaxRestartDelay = 0.3f;
 const float kStartProcessPadding = 0.5f;
 const int kTestNodePort = 24812;
 const int kTestScreenId = 1;
+
+static boost::posix_time::time_duration
+secondsAsDuration(float seconds)
+{
+    return boost::posix_time::milliseconds(static_cast<long>(seconds * 1000));
+}
+
 void repeatServerChangeFunc(const boost::system::error_code&,
                             CoreProcess* coreProcess,
                             int& startCount, boost::asio::deadline_timer* timer)
@@ -38,7 +46,7 @@ void repeatServerChangeFunc(const boost::system::error_code&,
 
         float randomDelay = kMinRestartDelay + static_cast<float>(rand()) / (static_cast<float>(RAND_MAX / (kMaxRestartDelay - kMinRestartDelay)));
 
-        timer->expires_at(timer->expires_at() + boost::posix_time::seconds(randomDelay));
+        timer->expires_at(timer->expires_at() + secondsAsDuration(randomDelay));
         timer->async_wait(boost::bind(repeatServerChangeFunc, boost::asio::placeholders::error, coreProcess, startCount, timer));
     }
 }
@@ -83,10 +91,10 @@ TEST_CASE("Start and stop core process in different modes", "[CoreProcess]" ) {
                             std::shared_ptr<ProcessCommand>(&processCommandMock.get()));
 
     float finishTime = kMaxmiumStartTime * kMaxRestartDelay + kSignalDelay + kStartProcessPadding;
-    boost::asio::deadline_timer timer(ioService, boost::posix_time::seconds(finishTime));
+    boost::asio::deadline_timer timer(ioService, secondsAsDuration(finishTime));
 
     int startCount = 0;
-    boost::asio::deadline_timer signalDelayTimer(ioService, boost::posix_time::seconds(kSignalDelay));
+    boost::asio::deadline_timer signalDelayTimer(ioService, secondsAsDuration(kSignalDelay));
 
     testFinished.connect([&ioService, &coreProcess]() {
         REQUIRE (coreProcess.currentServerId() == 1);
@@ -105,4 +113,3 @@ TEST_CASE("Start and stop core process in different modes", "[CoreProcess]" ) {
 
     ioService.run();
 }
-
